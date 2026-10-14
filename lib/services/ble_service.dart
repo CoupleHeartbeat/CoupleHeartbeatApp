@@ -73,22 +73,50 @@ class DeviceStatus {
 
 // Wi-Fi 配网状态（由设备 GATT 0xFFE5 读取）
 // state 含义：0=未配置、1=连接中、2=已连接、3=失败。
-// 未连接时 ip 为空串、rssi 为 0。
+// 未连接时 ip 为空串、rssi 为 0。reason 是设备记录的最近一次断开原因码。
 class WifiStatus {
   final int state;
   final String? ssid;
   final String? ip;
   final int? rssi;
+  final int? reason;
 
   const WifiStatus({
     required this.state,
     this.ssid,
     this.ip,
     this.rssi,
+    this.reason,
   });
 
   // 仅当设备已成功连上路由器时为 true
   bool get isConnected => state == 2;
+
+  // 把设备的断开原因码翻译成可操作的中文提示（ESP-IDF wifi_err_reason_t）。
+  // 让“未连上”能区分成密码错、找不到网络、信号太弱等，不必靠猜。
+  String? get reasonHint {
+    switch (reason) {
+      case null:
+      case 0:
+        return null;
+      case 15: // WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT
+      case 204: // WIFI_REASON_HANDSHAKE_TIMEOUT
+        return '密码不正确，或路由器加密方式不兼容';
+      case 2: // WIFI_REASON_AUTH_EXPIRE
+      case 4: // WIFI_REASON_AUTH_FAIL
+      case 23: // WIFI_REASON_802_1X_AUTH_FAILED
+        return '路由器拒绝了认证，请核对密码';
+      case 201: // WIFI_REASON_NO_AP_FOUND
+        return '没扫到这个网络：名称是否打错，或它不是 2.4GHz 网络';
+      case 203: // WIFI_REASON_ASSOC_FAIL
+      case 205: // WIFI_REASON_CONNECTION_FAIL
+        return '路由器拒绝连接，可能是信号太弱或设备数已满';
+      case 200: // WIFI_REASON_BEACON_TIMEOUT
+        return '连接中断，信号太弱';
+      default:
+        return '连接失败（原因码 $reason）';
+    }
+  }
 
   // 状态中文标签，未知取值退回“未知”
   String get stateLabel {
@@ -790,6 +818,7 @@ class BleService {
         ssid: decoded['ssid'] as String?,
         ip: decoded['ip'] as String?,
         rssi: (decoded['rssi'] as num?)?.toInt(),
+        reason: (decoded['reason'] as num?)?.toInt(),
       );
     } catch (_) {
       return null;

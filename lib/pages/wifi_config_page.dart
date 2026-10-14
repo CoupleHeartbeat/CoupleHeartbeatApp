@@ -388,12 +388,16 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
 
     if (failed.isEmpty) return '两台设备均配网成功';
     if (ok.isEmpty) {
+      // 优先展示设备上报的断开原因码提示，比笼统的“密码或信号”更可定位
+      final hint = (s1?.reasonHint ?? s2?.reasonHint) ??
+          '请检查 Wi-Fi 密码或信号后重试';
       return timedOut
-          ? '两台设备均未连上（${failed.join('、')}）：请检查 Wi-Fi 密码或信号后重试'
-          : '配网失败（${failed.join('、')}）：请检查 Wi-Fi 密码或信号后重试';
+          ? '两台设备均未连上（${failed.join('、')}）：$hint'
+          : '配网失败（${failed.join('、')}）：$hint';
     }
+    final hint = (s2?.reasonHint ?? s1?.reasonHint) ?? '请检查该设备的 Wi-Fi 密码或信号';
     return '配网部分成功：${ok.join('、')} 已连上；'
-        '${failed.join('、')} 失败（请检查该设备的 Wi-Fi 密码或信号）';
+        '${failed.join('、')} 失败（$hint）';
   }
 
   void _showSnack(String msg) {
