@@ -640,6 +640,20 @@ class BleService {
             '该设备可能不是 AI Passport，或固件未更新',
       );
 
+  // 同时给多台设备下发同一个 AI 对话 API Key（成对双设备场景）。
+  // 与 writeWifiCredentialsToMany 相同：按 addresses 顺序逐台串行下发，
+  // 返回「地址 -> 错误原因」：null 表示该台成功，单台失败不影响后续设备。
+  static Future<Map<String, String?>> writeAiKeyToMany({
+    required List<String> addresses,
+    required String apiKey,
+  }) async {
+    final results = <String, String?>{};
+    for (final addr in addresses) {
+      results[addr] = await writeAiKey(address: addr, apiKey: apiKey);
+    }
+    return results;
+  }
+
   // 清除设备已保存的 AI 对话 API Key：下发 {"clear":true}。
   static Future<String?> clearAiKey({required String address}) =>
       _writeJsonToChar(
@@ -649,6 +663,17 @@ class BleService {
         notFoundMsg: '未找到 AI 配置特征（固件版本过旧）：'
             '该设备可能不是 AI Passport，或固件未更新',
       );
+
+  // 同时清除多台设备的 AI 对话 API Key（成对双设备场景），语义同上。
+  static Future<Map<String, String?>> clearAiKeyToMany({
+    required List<String> addresses,
+  }) async {
+    final results = <String, String?>{};
+    for (final addr in addresses) {
+      results[addr] = await clearAiKey(address: addr);
+    }
+    return results;
+  }
 
   // 通用 JSON 写入：连接（超时 12 秒）→ 尽力协商 MTU（默认 185）
   // → discoverServices 最多重试 3 次 → 找到 0xFFE0 服务与目标特征

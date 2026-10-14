@@ -529,14 +529,24 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // AI 对话配置入口：使用设备 A 的地址与名称，返回后刷新配置状态
-  void _openAiKeyConfig() {
-    Navigator.of(context)
+  // AI 对话配置入口：使用设备 A 的地址与名称，返回后刷新配置状态。
+  // 两台模式下把设备 B 的地址与名称作为 secondAddress/secondDeviceName 传入，
+  // 支持在页面内同时给两台设备下发同一个 API Key。
+  Future<void> _openAiKeyConfig() async {
+    String? addrB;
+    if (!_isSingle) {
+      addrB = await StorageService.getDeviceAddress('B');
+    }
+    if (!mounted) return;
+    await Navigator.of(context)
         .push(
       MaterialPageRoute(
         builder: (context) => AiKeyPage(
           address: _addrA ?? '',
           deviceName: widget.deviceAName,
+          secondAddress:
+              (_isSingle || addrB == null || addrB.isEmpty) ? null : addrB,
+          secondDeviceName: _isSingle ? null : widget.deviceBName,
         ),
       ),
     )
