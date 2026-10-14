@@ -47,7 +47,7 @@ class DeviceStatus {
   final bool paired;
   final String? badgeName;
   final int? battery; // 0..100，读取失败为 null
-  final int? mode; // 0=工牌 1=心动 2=贴贴 3=对话
+  final int? mode; // 0=工牌（含靠近光效） 1=对话
   final int? volume; // 0..100
   final int? partnerRssi; // 对方设备信号强度（dBm）
 
@@ -60,7 +60,7 @@ class DeviceStatus {
     this.partnerRssi,
   });
 
-  static const List<String> modeNames = ['工牌', '心动', '贴贴', '对话'];
+  static const List<String> modeNames = ['工牌', '对话'];
 
   String get modeName =>
       (mode != null && mode! >= 0 && mode! < modeNames.length)

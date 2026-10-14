@@ -197,7 +197,7 @@ class _PairingPageState extends State<PairingPage> {
             ),
             const SizedBox(height: 16),
             const Text(
-              '配对成功后，两台设备靠近时会自动进入心动模式。\n距离越近，心跳越快、光效越强。',
+              '配对成功后，两台设备靠近时工牌页四周会亮起光效。\n距离越近，光效越强、心跳越快。',
               style: TextStyle(color: Colors.grey, fontSize: 12),
               textAlign: TextAlign.center,
             ),
