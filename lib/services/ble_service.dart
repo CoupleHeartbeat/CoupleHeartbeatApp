@@ -20,6 +20,9 @@ class BleUuids {
   // AI 对话配置特征（写入：{"api_key":"sk-xxxx"} 保存、{"clear":true} 清除；
   // 读取：{"configured":true|false}。设备绝不回传 Key 明文）
   static const String aiConfig = '0000ffe6-0000-1000-8000-00805f9b34fb';
+  // Wi-Fi 扫描特征（写入：{"scan":true} 让设备开始扫描；
+  // 读取：{"scanning":true|false,"aps":[{"ssid":"MyWiFi","rssi":-55}, ...]}）
+  static const String wifiScan = '0000ffe7-0000-1000-8000-00805f9b34fb';
 
   // flutter_blue_plus 的 Guid.toString() 对 16 位 UUID 只返回 "ffe0" 这样的
   // 4 字符短形式，直接与上面的 36 位完整 UUID 做 == 永远不相等。
@@ -102,6 +105,25 @@ class WifiStatus {
         return '未知';
     }
   }
+}
+
+// 附近 Wi-Fi 热点（由设备 GATT 0xFFE7 扫描返回）
+class WifiAp {
+  final String ssid;
+  final int rssi; // 信号强度（dBm，负值，越接近 0 越强）
+
+  const WifiAp({required this.ssid, required this.rssi});
+}
+
+// Wi-Fi 扫描结果（由设备 GATT 0xFFE7 读取）
+// scanning 为 true 表示设备仍在扫描，此时 aps 可能是上一次的结果或空数组。
+// aps 已由设备按信号从强到弱排序，同名网络只保留最强的一条；
+// 设备受 ATT 负载限制，最多返回约 13 条。
+class WifiScanResult {
+  final bool scanning;
+  final List<WifiAp> aps;
+
+  const WifiScanResult({required this.scanning, required this.aps});
 }
 
 class BleService {
@@ -470,6 +492,111 @@ class BleService {
         onError: describeWifiWriteError,
       );
 
+  // 让设备开始扫描附近 Wi-Fi（0xFFE7，写入 {"scan":true}）。
+  // 返回 null 表示指令已下发成功，非 null 为中文失败原因。
+  // 设备侧约需 2~4 秒完成扫描，调用方随后用 readWifiScanResult 轮询结果。
+  // 该特征负载较大，写入前把 MTU 请求值提高到 512。
+  static Future<String?> startWifiScan({required String address}) =>
+      _writeJsonToChar(
+        address: address,
+        uuid: BleUuids.wifiScan,
+        payload: {'scan': true},
+        notFoundMsg: '未找到 Wi-Fi 扫描特征（固件版本过旧）：'
+            '该设备可能不是 AI Passport，或固件未更新',
+        onError: describeWifiWriteError,
+        mtu: 512,
+      );
+
+  // 读取 Wi-Fi 扫描结果（0xFFE7）。
+  // 返回 null 表示读不到（设备离线或固件不支持），调用方按失败处理。
+  // scanning 为 true 表示设备仍在扫描，aps 可能是上一次的结果或空数组。
+  // 该特征负载较大，连接成功后先把 MTU 请求提高到 512（失败则维持默认，不中断）。
+  static Future<WifiScanResult?> readWifiScanResult({required String address}) async {
+    if (address.isEmpty) return null;
+
+    final device = BluetoothDevice.fromId(address);
+    try {
+      await device.connect(timeout: const Duration(seconds: 8));
+    } catch (_) {
+      return null;
+    }
+
+    // 扫描结果 JSON 较大，优先协商更大的 MTU；
+    // 部分平台不支持时失败不报错，直接按默认 MTU 继续读取。
+    try {
+      await device.requestMtu(512);
+    } catch (_) {
+      // 忽略：维持默认 MTU，由后续读取决定成败
+    }
+
+    try {
+      final services = await device.discoverServices();
+      BluetoothService? svc;
+      for (var s in services) {
+        if (BleUuids.eq(s.uuid, BleUuids.service)) {
+          svc = s;
+          break;
+        }
+      }
+      if (svc == null) return null;
+
+      BluetoothCharacteristic? scanChar;
+      for (var c in svc.characteristics) {
+        if (BleUuids.eq(c.uuid, BleUuids.wifiScan)) {
+          scanChar = c;
+          break;
+        }
+      }
+      if (scanChar == null) return null;
+
+      final decoded = jsonDecode(utf8.decode(await scanChar.read()));
+      if (decoded is! Map) return null;
+
+      final scanning = decoded['scanning'] == true;
+      final aps = <WifiAp>[];
+      final rawAps = decoded['aps'];
+      if (rawAps is List) {
+        for (final item in rawAps) {
+          if (item is Map) {
+            final ssid = item['ssid'];
+            // 只保留有效 SSID，跳过解析不了的空项
+            if (ssid is String && ssid.isNotEmpty) {
+              aps.add(WifiAp(
+                ssid: ssid,
+                rssi: (item['rssi'] as num?)?.toInt() ?? 0,
+              ));
+            }
+          }
+        }
+      }
+      return WifiScanResult(scanning: scanning, aps: aps);
+    } catch (_) {
+      return null;
+    } finally {
+      try { await device.disconnect(); } catch (_) {}
+    }
+  }
+
+  // 同时给多台设备下发同一套 Wi-Fi 凭据。
+  // 按 addresses 顺序逐台串行下发（避免并发连接互相干扰），
+  // 返回「地址 -> 错误原因」：null 表示该台成功，非 null 为该台的中文失败原因。
+  // 单台失败不影响后续设备继续下发。
+  static Future<Map<String, String?>> writeWifiCredentialsToMany({
+    required List<String> addresses,
+    required String ssid,
+    required String password,
+  }) async {
+    final results = <String, String?>{};
+    for (final addr in addresses) {
+      results[addr] = await writeWifiCredentials(
+        address: addr,
+        ssid: ssid,
+        password: password,
+      );
+    }
+    return results;
+  }
+
   // 写入 AI 对话 API Key（0xFFE6）：下发 {"api_key":"sk-xxxx"}。
   // 返回 null 表示成功，非 null 为中文失败原因。
   // Key 只写入设备本地，App 不保存也不上传；设备端 Key 非法/超长会返回 ATT 错误。
@@ -495,18 +622,21 @@ class BleService {
             '该设备可能不是 AI Passport，或固件未更新',
       );
 
-  // 通用 JSON 写入：连接（超时 12 秒）→ 尽力协商 MTU 185
+  // 通用 JSON 写入：连接（超时 12 秒）→ 尽力协商 MTU（默认 185）
   // → discoverServices 最多重试 3 次 → 找到 0xFFE0 服务与目标特征
   // → 写入 JSON（utf8 + jsonEncode），最后无论如何都断开连接。
   // 返回 null 表示成功，非 null 为中文失败原因。
   // notFoundMsg 在服务或目标特征缺失（通常是固件版本过旧）时返回；
   // onError 负责把底层 BLE 写入异常翻译为中文，缺省按 AI Key 场景翻译。
+  // mtu 为协商的 MTU 请求值：默认 185（既有特征行为不变）；
+  // 0xFFE7 等负载较大的特征可传入 512。
   static Future<String?> _writeJsonToChar({
     required String address,
     required String uuid,
     required Map<String, dynamic> payload,
     required String notFoundMsg,
     String Function(Object e)? onError,
+    int mtu = 185,
   }) async {
     if (address.isEmpty) return '设备地址为空，请重新选择设备';
 
@@ -519,7 +649,7 @@ class BleService {
 
     // 协商 MTU：JSON 负载可能超过默认 23 字节，默认只够传 20 字节
     try {
-      await device.requestMtu(185);
+      await device.requestMtu(mtu);
     } catch (_) {
       // 部分平台不支持则维持默认，由后续写入报错
     }

@@ -508,13 +508,22 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // Wi-Fi 配网入口：使用设备 A 的地址与名称
-  void _openWifiConfig() {
+  // Wi-Fi 配网入口：使用设备 A 的地址与名称；
+  // 两台模式下把设备 B 的地址与名称作为 secondAddress/secondDeviceName 传入。
+  Future<void> _openWifiConfig() async {
+    String? addrB;
+    if (!_isSingle) {
+      addrB = await StorageService.getDeviceAddress('B');
+    }
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => WifiConfigPage(
           address: _addrA ?? '',
           deviceName: widget.deviceAName,
+          secondAddress:
+              (_isSingle || addrB == null || addrB.isEmpty) ? null : addrB,
+          secondDeviceName: _isSingle ? null : widget.deviceBName,
         ),
       ),
     );

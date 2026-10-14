@@ -16,9 +16,11 @@ Firmware lives in https://github.com/CoupleHeartbeat/CoupleHeartbeatDev
   on screen, give them names. The app then writes the pairing data to both.
 - **Configure a single device** - for someone who owns only one gadget: set its
   nickname and go straight to provisioning, without pairing.
-- **Wi-Fi provisioning** - send the network name and password to a device over
-  BLE and watch the result (state, IP address, signal strength) until it
-  connects. Credentials can be cleared again from the same page.
+- **Wi-Fi provisioning** - ask the device to scan nearby networks and pick one
+  from the list, then send the password over BLE and watch the result (state, IP
+  address, signal strength) until it connects. When the devices are configured
+  as a pair the same credentials go to both at once, and credentials can be
+  cleared again from the same page.
 - **API key** - hand the model API key to a device. The key is written to the
   device and never stored by the app and never uploaded anywhere else.
 - **Live status** - read battery, mode, volume and partner signal straight from
@@ -36,6 +38,7 @@ The app talks to one primary service (`0000ffe0-...`):
 | 0xFFE4 | write | Wi-Fi credentials |
 | 0xFFE5 | read | Wi-Fi provisioning state |
 | 0xFFE6 | read / write | model API key (reads only report whether one is set) |
+| 0xFFE7 | read / write | nearby Wi-Fi scan (write a request, read the list) |
 
 Connections are short lived: the app connects, performs one read or write, then
 disconnects so the device keeps advertising.
