@@ -28,7 +28,8 @@ class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
   DeviceStatus? _statusA;
   DeviceStatus? _statusB;
-  WifiStatus? _wifiStatus;
+  WifiStatus? _wifiStatus; // 设备 A 的 Wi-Fi 状态
+  WifiStatus? _wifiStatusB; // 成对模式下设备 B 的 Wi-Fi 状态
   bool? _aiKeyConfigured; // 设备 A 是否已配置 AI 对话 Key，null=未读取到
   String? _addrA;
   bool _loadingStatus = false;
@@ -61,10 +62,15 @@ class _HomePageState extends State<HomePage> {
           : await BleService.readDeviceStatus(address: addrB);
     }
 
-    // Wi-Fi 状态：单台模式用于状态卡片，两台模式用于设置页展示行
+    // Wi-Fi 状态：单台模式用于状态卡片，两台模式用于设置页展示行。
+    // 成对模式下 A/B 两台都要读，否则无法判断哪一台没连上。
     WifiStatus? wifi;
     if (addrA != null) {
       wifi = await BleService.readWifiStatus(address: addrA);
+    }
+    WifiStatus? wifiB;
+    if (!_isSingle && addrB != null) {
+      wifiB = await BleService.readWifiStatus(address: addrB);
     }
 
     // AI 对话 Key 状态：读取失败（离线/旧固件）返回 null，不影响其它状态
@@ -79,6 +85,7 @@ class _HomePageState extends State<HomePage> {
       _statusA = a;
       _statusB = b;
       _wifiStatus = wifi;
+      _wifiStatusB = wifiB;
       _aiKeyConfigured = aiConfigured;
       _loadingStatus = false;
     });
@@ -477,15 +484,25 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // 设置页「Wi-Fi 状态」展示文案
-  String get _wifiStatusText {
-    final s = _wifiStatus;
+  // 单台 Wi-Fi 状态文案片段：状态 + (ssid · ip · rssi)
+  String _wifiStatusOne(WifiStatus? s) {
     if (s == null) return '设备离线 / 未知';
     final parts = <String>[s.stateLabel];
     if (s.ssid != null && s.ssid!.isNotEmpty) parts.add(s.ssid!);
     if (s.ip != null && s.ip!.isNotEmpty) parts.add(s.ip!);
     if (s.rssi != null && s.rssi != 0) parts.add('${s.rssi} dBm');
     return parts.join(' · ');
+  }
+
+  // 设置页「Wi-Fi 状态」展示文案：
+  // 单台模式只显示 A 台；成对模式分别显示 A/B 两台，
+  // 避免只看得到一台状态而误判“只有一台连上”。
+  String get _wifiStatusText {
+    if (_isSingle) return _wifiStatusOne(_wifiStatus);
+    final nameA = widget.deviceAName.isEmpty ? '设备A' : widget.deviceAName;
+    final nameB = widget.deviceBName!.isEmpty ? '设备B' : widget.deviceBName!;
+    return '$nameA: ${_wifiStatusOne(_wifiStatus)}\n'
+        '$nameB: ${_wifiStatusOne(_wifiStatusB)}';
   }
 
   // 设置页「AI 对话配置」展示文案：未读取到显示「--」

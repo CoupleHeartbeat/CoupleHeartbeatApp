@@ -27,6 +27,15 @@ class BleUuids {
   // unix 为 UTC 秒，tz_offset 为手机时区的 UTC 偏移秒（东为正））
   static const String timeSync = '0000ffe8-0000-1000-8000-00805f9b34fb';
 
+  // ---- 产品身份识别（严格扫描过滤用，与固件定义一一对应）----
+  // 心跳广播公司 ID（固件 couple_ble.c 的 COUPLE_BLE_MFG_ID，FoloToy 自定义）
+  static const int mfgCompanyId = 0x02E5;
+  // 心跳负载最小长度：公司 ID(2) + pair_id(8) + seq(2) + AES 密文(8) + CRC16(2)
+  static const int mfgHeartbeatMinLen = 22;
+  // 固件设备名前缀（couple_gatt.c 的 COUPLE_GATT_DEV_NAME_PREFIX，
+  // 完整名称形如 AI-Passport-XXXX，XXXX 为蓝牙 MAC 末 4 位）
+  static const String deviceNamePrefix = 'AI-Passport';
+
   // flutter_blue_plus 的 Guid.toString() 对 16 位 UUID 只返回 "ffe0" 这样的
   // 4 字符短形式，直接与上面的 36 位完整 UUID 做 == 永远不相等。
   // 统一先归一化为 128 位形式再比较（str128 恒为 36 字符）。
@@ -178,12 +187,18 @@ class BleService {
     final sub = FlutterBluePlus.scanResults.map((results) {
       for (var r in results) {
         final name = r.device.localName;
-        // 过滤：名称包含 "Passport" 或 "AI" 或广播中包含我们的服务 UUID
-        bool isTarget = name.toLowerCase().contains('passport') ||
-                       name.toLowerCase().contains('ai') ||
-                       r.advertisementData.serviceUuids.any(
-                         (uuid) => BleUuids.eq(uuid, BleUuids.service)
-                       );
+        // 严格过滤：只认本产品设备，三条身份信号任一命中即可（不再做
+        // 名称子串匹配——"ai"/"passport" 会误匹配 AirPods、小米等设备）：
+        //   1) 广播含本产品服务 UUID 0xFFE0（固件扫描响应固定携带）
+        //   2) 厂家识别码 0x02E5 + 完整心跳负载（固件 ADV 包在已配对时携带）
+        //   3) 设备名以固件前缀 "AI-Passport" 开头（形如 AI-Passport-XXXX）
+        final hasService = r.advertisementData.serviceUuids
+            .any((uuid) => BleUuids.eq(uuid, BleUuids.service));
+        final mfg = r.advertisementData.manufacturerData[BleUuids.mfgCompanyId];
+        final hasMfg = mfg != null && mfg.length >= BleUuids.mfgHeartbeatMinLen;
+        final isTarget = hasService ||
+            hasMfg ||
+            name.startsWith(BleUuids.deviceNamePrefix);
         if (isTarget && name.isNotEmpty) {
           devices[r.device.id.id] = BleDeviceInfo(
             device: r.device,

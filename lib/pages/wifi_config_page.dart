@@ -53,9 +53,12 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
   // 配网结果轮询：每 2 秒一次，最多约 20 秒
   Timer? _pollTimer;
   int _pollCount = 0;
+  int _nullPolls = 0; // 连续读取失败（null）次数，不计入超时预算
   bool _pollInFlight = false; // 防止轮询读取重入
   List<String> _pollAddresses = []; // 本轮轮询目标（下发时确定，避免中途变化）
   static const int _maxPolls = 10;
+  // 连续读不到状态达到该次数才终止：BLE 偶发读取失败不应被当成配网失败
+  static const int _maxNullPolls = 5;
 
   // 是否存在第二台设备（成对模式）
   bool get _hasSecond =>
@@ -375,6 +378,7 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
         ? [widget.address, widget.secondAddress!]
         : [widget.address];
     _pollCount = 0;
+    _nullPolls = 0;
     setState(() => _polling = true);
     _pollTimer =
         Timer.periodic(const Duration(seconds: 2), (_) => _doPoll());
@@ -398,6 +402,21 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
         if (dual) _secondWifiStatus = s2;
       });
       _pollCount++;
+
+      // 本轮一台都没读到（BLE 连接波动）：不计入超时预算，
+      // 避免把“状态读取失败”误判成“配网失败”；连续多次读不到才终止
+      final anyRead = s1 != null || (dual && s2 != null);
+      if (!anyRead) {
+        _nullPolls++;
+        if (_nullPolls >= _maxNullPolls) {
+          _cancelPollTimer();
+          setState(() =>
+              _progress = '状态读取失败：设备可能距离较远或正在连接 Wi-Fi，'
+                  '请靠近设备后退出重进本页查看真实状态');
+        }
+        return;
+      }
+      _nullPolls = 0;
 
       bool terminal(WifiStatus? s) =>
           s != null && (s.state == 2 || s.state == 3);
@@ -426,7 +445,8 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
     required bool timedOut,
   }) {
     if (!dual) {
-      if (timedOut || s1 == null) return '配网超时，请确认设备在附近后重试';
+      if (s1 == null) return '状态读取失败：请靠近设备后重试';
+      if (timedOut) return '配网超时，请确认设备在附近后重试';
       return s1.isConnected ? '配网成功' : '配网失败：请检查 Wi-Fi 密码或信号后重试';
     }
 
@@ -435,6 +455,9 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
     void judge(String label, WifiStatus? s) {
       if (s != null && s.isConnected) {
         ok.add(label);
+      } else if (s == null) {
+        // 读不到状态 ≠ 连接失败：明确标注，避免误导用户去改密码
+        failed.add('$label（状态读取失败）');
       } else {
         failed.add(label);
       }
