@@ -32,6 +32,7 @@ class _HomePageState extends State<HomePage> {
   bool? _aiKeyConfigured; // 设备 A 是否已配置 AI 对话 Key，null=未读取到
   String? _addrA;
   bool _loadingStatus = false;
+  bool _syncingTime = false; // 正在同步时间
 
   // 设备 B 名称为空即视为单台模式
   bool get _isSingle =>
@@ -414,6 +415,16 @@ class _HomePageState extends State<HomePage> {
               ),
               const Divider(color: Color(0xFF3A3A5E), height: 1),
               ListTile(
+                leading: const Icon(Icons.access_time, color: Color(0xFF6BB5FF)),
+                title: const Text('同步时间',
+                    style: TextStyle(color: Colors.white)),
+                subtitle: const Text('把手机当前时间同步到设备',
+                    style: TextStyle(color: Colors.grey)),
+                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                onTap: _syncingTime ? null : _syncTime,
+              ),
+              const Divider(color: Color(0xFF3A3A5E), height: 1),
+              ListTile(
                 leading: const Icon(Icons.volume_up, color: Color(0xFFFF6B9D)),
                 title: const Text('心跳音量',
                     style: TextStyle(color: Colors.white)),
@@ -553,6 +564,50 @@ class _HomePageState extends State<HomePage> {
         .then((_) {
       if (mounted) _refreshStatus();
     });
+  }
+
+  // 同步时间入口：把手机当前时间通过 0xFFE8 下发到设备（成对模式下
+  // 同时下发两台）。结果用 SnackBar 反馈。
+  Future<void> _syncTime() async {
+    final addrA = _addrA;
+    if (addrA == null || addrA.isEmpty) {
+      _showSnack('设备未连接，请先连接设备');
+      return;
+    }
+
+    setState(() => _syncingTime = true);
+    try {
+      final addrs = [addrA];
+      if (!_isSingle) {
+        final addrB = await StorageService.getDeviceAddress('B');
+        if (addrB != null && addrB.isNotEmpty) addrs.add(addrB);
+      }
+
+      final results =
+          await BleService.writeDeviceTimeToMany(addresses: addrs);
+      if (!mounted) return;
+
+      final failed = <String>[];
+      for (final entry in results.entries) {
+        if (entry.value != null) failed.add(entry.value!);
+      }
+      if (failed.isEmpty) {
+        _showSnack('时间已同步到 ${results.length} 台设备');
+      } else if (failed.length == results.length) {
+        _showSnack('同步失败：${failed.first}');
+      } else {
+        _showSnack('部分同步失败：${failed.first}');
+      }
+    } finally {
+      if (mounted) setState(() => _syncingTime = false);
+    }
+  }
+
+  void _showSnack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg)),
+    );
   }
 
   void _showUnpairDialog() {

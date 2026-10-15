@@ -23,6 +23,9 @@ class BleUuids {
   // Wi-Fi 扫描特征（写入：{"scan":true} 让设备开始扫描；
   // 读取：{"scanning":true|false,"aps":[{"ssid":"MyWiFi","rssi":-55}, ...]}）
   static const String wifiScan = '0000ffe7-0000-1000-8000-00805f9b34fb';
+  // 时间同步特征（写入：{"unix":1767225600,"tz_offset":28800}；
+  // unix 为 UTC 秒，tz_offset 为手机时区的 UTC 偏移秒（东为正））
+  static const String timeSync = '0000ffe8-0000-1000-8000-00805f9b34fb';
 
   // flutter_blue_plus 的 Guid.toString() 对 16 位 UUID 只返回 "ffe0" 这样的
   // 4 字符短形式，直接与上面的 36 位完整 UUID 做 == 永远不相等。
@@ -671,6 +674,39 @@ class BleService {
     final results = <String, String?>{};
     for (final addr in addresses) {
       results[addr] = await clearAiKey(address: addr);
+    }
+    return results;
+  }
+
+  // 向单台设备同步时间（0xFFE8）：下发手机当前 Unix 秒 + 时区偏移秒。
+  // 返回 null 表示成功，非 null 为中文失败原因。
+  static Future<String?> writeDeviceTime({
+    required String address,
+    DateTime? now,
+  }) {
+    final t = now ?? DateTime.now();
+    final unixSec = t.toUtc().millisecondsSinceEpoch ~/ 1000;
+    final tzOffset = t.timeZoneOffset.inSeconds;
+    return _writeJsonToChar(
+      address: address,
+      uuid: BleUuids.timeSync,
+      payload: {'unix': unixSec, 'tz_offset': tzOffset},
+      notFoundMsg: '未找到时间同步特征（固件版本过旧）：'
+          '该设备固件不支持时间同步，请先升级固件',
+    );
+  }
+
+  // 同时向多台设备同步同一时刻（成对双设备场景）。
+  // 逐台串行下发，返回「地址 -> 错误原因」：null 表示该台成功，
+  // 单台失败不影响后续设备。
+  static Future<Map<String, String?>> writeDeviceTimeToMany({
+    required List<String> addresses,
+    DateTime? now,
+  }) async {
+    final t = now ?? DateTime.now();
+    final results = <String, String?>{};
+    for (final addr in addresses) {
+      results[addr] = await writeDeviceTime(address: addr, now: t);
     }
     return results;
   }

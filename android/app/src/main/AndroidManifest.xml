@@ -11,16 +11,26 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
-    <!-- BLE scan on Android 11 and below requires location permission -->
+    <!-- BLE scan on Android 11 and below requires location permission；
+         Wi-Fi 扫描（wifi_scan 插件）在 Android 12 及以下同样依赖定位权限，
+         因此放宽到 SDK 32。 -->
     <uses-permission
         android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
+        android:maxSdkVersion="32" />
 
     <!-- Android 12+ runtime Bluetooth permissions -->
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Wi-Fi 扫描（wifi_scan 插件）：Android 13+ 用 NEARBY_WIFI_DEVICES，
+         声明 neverForLocation 后无需定位权限；另需 Wi-Fi 状态读写权限。 -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
     <application
         android:label="AI Passport"

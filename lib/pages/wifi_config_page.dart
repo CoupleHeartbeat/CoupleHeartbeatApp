@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:wifi_scan/wifi_scan.dart';
 import '../services/ble_service.dart';
 
 // Wi-Fi 配网页：向设备下发 SSID/密码，并轮询读取配网结果。
@@ -120,9 +121,65 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
 
   // ---------- 附近网络扫描 ----------
 
-  // 扫描附近网络：先下发扫描指令，再每 1.5 秒读一次结果（最多 8 次），
-  // 直到设备回报 scanning == false。整个过程的轮询在 dispose 后停止。
+  // 扫描入口：优先用手机本机扫描（结果按 5GHz/6GHz 过滤，设备只支持
+  // 2.4GHz）；手机扫描不可用（权限被拒/平台不支持/节流）时降级为
+  // 设备端扫描（写 0xFFE7 触发 + 轮询读取，最多 8 次）。
   Future<void> _startScan() async {
+    setState(() {
+      _scanning = true;
+      _aps = null;
+      _scanProgress = '正在用手机扫描附近网络...';
+    });
+    final ok = await _scanWithPhone();
+    if (ok || !mounted) return;
+    setState(() => _scanProgress = '手机扫描不可用，改用设备扫描...');
+    await _startDeviceScan();
+  }
+
+  // 手机本机扫描：canStartScan → startScan → getScannedResults，
+  // 过滤 5GHz/6GHz（frequency >= 5000），SSID 去重（多 BSSID 合并）
+  // 后按信号降序填入 _aps。返回 true 表示已拿到结果（含空列表），
+  // false 表示不可用（调用方降级到设备扫描）。
+  Future<bool> _scanWithPhone() async {
+    try {
+      final canScan = await WiFiScan.instance.canStartScan(askPermissions: true);
+      if (canScan != CanStartScan.yes) return false;
+      await WiFiScan.instance.startScan();
+      // Android 对扫描结果有节流，稍等再取
+      await Future.delayed(const Duration(seconds: 2));
+      final canGet = await WiFiScan.instance.canGetScannedResults(
+          askPermissions: true);
+      if (canGet != CanGetScannedResults.yes) return false;
+      final results = await WiFiScan.instance.getScannedResults();
+      if (!mounted) return true;
+
+      final seen = <String>{};
+      final aps = <WifiAp>[];
+      for (final ap in results) {
+        final ssid = ap.ssid.trim();
+        if (ssid.isEmpty) continue;
+        if (ap.frequency >= 5000) continue; // 仅保留 2.4GHz
+        if (!seen.add(ssid)) continue; // SSID 去重
+        aps.add(WifiAp(ssid: ssid, rssi: ap.level));
+      }
+      aps.sort((a, b) => b.rssi.compareTo(a.rssi)); // 信号降序
+
+      setState(() {
+        _scanning = false;
+        _aps = aps;
+        _scanProgress = aps.isEmpty
+            ? '未扫描到附近的 2.4GHz Wi-Fi 网络，请确认手机 Wi-Fi 已开启'
+            : '扫描完成，点击下方网络可填入 Wi-Fi 名称';
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 设备端扫描（降级路径）：先下发扫描指令，再每 1.5 秒读一次结果
+  //（最多 8 次），直到设备回报 scanning == false。轮询在 dispose 后停止。
+  Future<void> _startDeviceScan() async {
     _cancelScanTimer();
     setState(() {
       _scanning = true;
