@@ -2,46 +2,43 @@
   <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
-# CoupleHeartbeat App
+# CoupleHeartbeat · App
 
-The phone companion for the CoupleHeartbeat devices. It pairs or configures the
-gadgets over Bluetooth Low Energy, pushes the Wi-Fi credentials they need and
-stores the model API key on the device. Built with Flutter.
+![platform](https://img.shields.io/badge/Flutter-Android%20%7C%20iOS-02569B)
+![transport](https://img.shields.io/badge/transport-BLE-informational)
+
+The phone companion for the CoupleHeartbeat badges. It pairs or configures the
+gadgets over Bluetooth Low Energy, provisions them with Wi-Fi credentials,
+writes the model API key and keeps their clock in sync. Built with Flutter.
 
 Firmware lives in https://github.com/CoupleHeartbeat/CoupleHeartbeatDev
 
-## What it does
+## Features
 
-- **Pair two devices** - pick both gadgets, type the 4-digit code each one shows
-  on screen, give them names. The app then writes the pairing data to both.
-- **Configure a single device** - for someone who owns only one gadget: set its
-  nickname and go straight to provisioning, without pairing.
-- **Wi-Fi provisioning** - ask the device to scan nearby networks and pick one
-  from the list, then send the password over BLE and watch the result (state, IP
-  address, signal strength) until it connects. When the devices are configured
-  as a pair the same credentials go to both at once, and credentials can be
-  cleared again from the same page.
-- **API key** - hand the model API key to a device. The key is written to the
-  device and never stored by the app and never uploaded anywhere else.
-- **Live status** - read battery, mode, volume and partner signal straight from
-  the device instead of showing placeholder values.
+| Area | Behaviour |
+| --- | --- |
+| **Pair two devices** | Pick both badges, enter the 4-digit code shown on each screen and give them names; the app writes the pairing data to both. |
+| **Single-device setup** | Own only one badge? Set its nickname and go straight to provisioning, no pairing required. |
+| **Wi-Fi provisioning** | Scans nearby networks on the phone first (2.4 GHz only, 5/6 GHz filtered) and falls back to a device-side scan. Credentials can be sent to one or both badges, and the page polls state, IP and signal until the device connects. The same page can clear saved credentials. |
+| **Badge settings** | Change the nickname shown on the badge. |
+| **Model API key** | Written to the device only. The app neither stores nor uploads it anywhere else. |
+| **Volume** | Adjust the heartbeat volume (including mute) and read the current level back. |
+| **Time sync** | Sends the phone's Unix time and UTC offset so the badge shows the correct local date and time. |
+| **Live status** | Battery, mode, volume and partner signal are read from the device instead of placeholders. |
 
-## Device protocol
+## Permissions
 
-The app talks to one primary service (`0000ffe0-...`):
+Android:
 
-| UUID | Access | Purpose |
-| --- | --- | --- |
-| 0xFFE1 | write | pairing configuration |
-| 0xFFE2 | read / write | badge name |
-| 0xFFE3 | read | device status |
-| 0xFFE4 | write | Wi-Fi credentials |
-| 0xFFE5 | read | Wi-Fi provisioning state |
-| 0xFFE6 | read / write | model API key (reads only report whether one is set) |
-| 0xFFE7 | read / write | nearby Wi-Fi scan (write a request, read the list) |
+- `BLUETOOTH_SCAN` / `BLUETOOTH_CONNECT` for BLE.
+- `ACCESS_FINE_LOCATION` plus the system location switch for Wi-Fi scanning.
+  Android treats scan results as location data even on recent versions.
+- `NEARBY_WIFI_DEVICES` on Android 13+; the app requests it at runtime before
+  the first scan.
 
-Connections are short lived: the app connects, performs one read or write, then
-disconnects so the device keeps advertising.
+iOS: only the Bluetooth usage description is needed. iOS does not expose a
+public Wi-Fi list API, so iPhone users enter the SSID manually or rely on the
+device-side scan.
 
 ## Build and run
 
@@ -49,14 +46,53 @@ disconnects so the device keeps advertising.
 flutter pub get
 flutter analyze
 flutter run
+flutter build apk --release
 ```
 
-Bluetooth permissions are requested at runtime; on Android the app asks for
-scan and connect permissions, on iOS for the Bluetooth usage description that is
-already declared in the project.
+### Release signing
 
-## Status
+Create `android/key.properties` (ignored by git) with:
+
+```
+storePassword=...
+keyPassword=...
+keyAlias=...
+storeFile=release-key.jks
+```
+
+Place the keystore next to the app module (for example
+`android/app/release-key.jks`) and point `storeFile` at it. Both
+`android/key.properties` and `*.jks` are excluded by `.gitignore`.
+
+## Device protocol
+
+The app talks to one primary service
+(`0000ffe0-0000-1000-8000-00805f9b34fb`):
+
+| UUID | Access | Purpose |
+| --- | --- | --- |
+| 0xFFE1 | write | Pairing configuration |
+| 0xFFE2 | read / write | Badge name |
+| 0xFFE3 | read / notify | Device status |
+| 0xFFE4 | write | Wi-Fi credentials |
+| 0xFFE5 | read / notify | Wi-Fi provisioning state |
+| 0xFFE6 | read / write | Model API key (reads only report whether one is set) |
+| 0xFFE7 | read / write | Nearby Wi-Fi scan (write a request, read the list) |
+| 0xFFE8 | write | Time sync (`unix` seconds and `tz_offset` seconds) |
+
+Connections are short lived: the app connects, performs one read or write, then
+disconnects so the device can keep advertising.
+
+## Project layout
+
+```
+lib/pages/       pairing, device and badge config, API key, volume, Wi-Fi, scan
+lib/services/    BLE transport and local storage
+android/         manifest, permissions and release signing
+ios/             Runner project and Bluetooth usage description
+```
+
+## Development notes
 
 `flutter test` still contains the untouched Flutter template widget test, which
-fails because it was written before the app existed. Everything else passes
-`flutter analyze` with no errors or warnings.
+fails because it predates the app. `flutter analyze` reports no errors.
