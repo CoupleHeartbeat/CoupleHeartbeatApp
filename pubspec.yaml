@@ -38,6 +38,7 @@ dependencies:
   shared_preferences: ^2.5.6
   # 手机本机 Wi-Fi 扫描（配网页附近网络列表；设备端 0xFFE7 扫描作降级）
   wifi_scan: ^0.5.0
+  permission_handler: 11.3.1
 
 dev_dependencies:
   flutter_test:

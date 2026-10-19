@@ -11,12 +11,12 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
-    <!-- BLE scan on Android 11 and below requires location permission；
-         Wi-Fi 扫描（wifi_scan 插件）在 Android 12 及以下同样依赖定位权限，
-         因此放宽到 SDK 32。 -->
-    <uses-permission
-        android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="32" />
+    <!-- Wi-Fi 扫描（wifi_scan 插件）与 BLE 扫描都依赖定位权限：
+         Android 12 及以下必须授予定位；Android 13+ 的扫描结果仍被视为位置信息，
+         多数机型同样要求定位权限且系统定位开关开启。
+         这里不能加 maxSdkVersion，否则 13+ 上权限未声明，运行时申请直接失败。 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- Android 12+ runtime Bluetooth permissions -->
     <uses-permission

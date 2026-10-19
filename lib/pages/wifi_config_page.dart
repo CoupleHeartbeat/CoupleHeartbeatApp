@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:wifi_scan/wifi_scan.dart';
 import '../services/ble_service.dart';
 
@@ -144,14 +146,39 @@ class _WifiConfigPageState extends State<WifiConfigPage> {
   // 后按信号降序填入 _aps。返回 true 表示已拿到结果（含空列表），
   // false 表示不可用（调用方降级到设备扫描）。
   Future<bool> _scanWithPhone() async {
+    // iOS/桌面系统没有公开的 Wi-Fi 列表 API，无法在应用内枚举附近网络。
+    if (!Platform.isAndroid) {
+      if (!mounted) return false;
+      setState(() => _scanProgress = '当前系统不支持应用内扫描 Wi-Fi，请手动输入网络名称');
+      return false;
+    }
     try {
-      final canScan = await WiFiScan.instance.canStartScan(askPermissions: true);
+      // Android 13+ 的“附近的 Wi-Fi 设备”运行时权限（旧系统会自动忽略）。
+      await Permission.nearbyWifiDevices.request();
+      // 扫描结果被视为位置信息：Android 12 及以下必须授予定位权限，
+      // Android 13+ 多数机型也要求定位权限与系统定位开关。
+      final location = await Permission.location.request();
+      if (!location.isGranted) {
+        if (!mounted) return false;
+        setState(() => _scanProgress = location.isPermanentlyDenied
+            ? '定位权限已被拒绝，请到系统设置中允许“位置”权限后重试'
+            : '未授予定位权限，无法扫描 Wi-Fi');
+        return false;
+      }
+      final service = await Permission.location.serviceStatus;
+      if (service != ServiceStatus.enabled) {
+        if (!mounted) return false;
+        setState(() => _scanProgress = '请先打开手机“定位服务”，系统要求扫描 Wi-Fi 时定位开启');
+        return false;
+      }
+
+      final canScan = await WiFiScan.instance.canStartScan(askPermissions: false);
       if (canScan != CanStartScan.yes) return false;
       await WiFiScan.instance.startScan();
       // Android 对扫描结果有节流，稍等再取
       await Future.delayed(const Duration(seconds: 2));
       final canGet = await WiFiScan.instance.canGetScannedResults(
-          askPermissions: true);
+          askPermissions: false);
       if (canGet != CanGetScannedResults.yes) return false;
       final results = await WiFiScan.instance.getScannedResults();
       if (!mounted) return true;
