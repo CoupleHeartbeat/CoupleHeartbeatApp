@@ -1,0 +1,218 @@
+name: android
+
+# 分别编译 main 与 feature/ble-relay 两个分支的 Android APK，
+# 再把安装包发布到同一个滚动 Release（tag: android-latest）。
+# 分支不存在时自动跳过，方便只在 main 上开发。
+
+on:
+  push:
+    branches:
+      - main
+      - feature/ble-relay
+    paths:
+      - 'lib/**'
+      - 'android/**'
+      - 'assets/**'
+      - 'test/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build · ${{ matrix.branch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - branch: main
+            slug: main
+          - branch: feature/ble-relay
+            slug: ble-relay
+    steps:
+      - name: Check whether ${{ matrix.branch }} exists
+        id: probe
+        env:
+          BRANCH: ${{ matrix.branch }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              "refs/heads/${BRANCH}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::分支 ${BRANCH} 不存在，跳过构建"
+          fi
+
+      - name: Check out ${{ matrix.branch }}
+        if: steps.probe.outputs.exists == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ matrix.branch }}
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        if: steps.probe.outputs.exists == 'true'
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Flutter
+        if: steps.probe.outputs.exists == 'true'
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: 3.47.4
+          channel: stable
+          cache: true
+
+      # 插件统一按 compileSdk 36 编译，Flutter 3.47 默认 NDK 28.2；
+      # 先补齐对应 SDK，镜像已内置时该步无副作用
+      - name: Ensure Android SDK platform 36
+        if: steps.probe.outputs.exists == 'true'
+        run: |
+          set -uo pipefail
+          sdkmanager="${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager" "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
+            "ndk;28.2.13676358" >/dev/null 2>&1 ||
+            echo "::warning::Android SDK / NDK 安装未成功，继续尝试构建"
+
+      - name: Resolve dependencies and analyze
+        if: steps.probe.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+          flutter pub get
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Build release APK
+        if: steps.probe.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+          flutter build apk --release --build-number "${GITHUB_RUN_NUMBER}"
+
+      - name: Collect release assets
+        if: steps.probe.outputs.exists == 'true'
+        env:
+          BRANCH: ${{ matrix.branch }}
+          slug: ${{ matrix.slug }}
+        run: |
+          set -euo pipefail
+          apk="build/app/outputs/flutter-apk/app-release.apk"
+          commit="$(git rev-parse --short=7 HEAD)"
+          version="$(sed -n 's/^version: *//p' pubspec.yaml | head -1)"
+          base="CoupleHeartbeatApp-${slug}-${commit}"
+
+          mkdir -p dist
+          cp "$apk" "dist/${base}.apk"
+          (
+            cd dist
+            sha256sum "${base}.apk" > "SHA256SUMS-${slug}"
+          )
+
+          {
+            echo "branch=${BRANCH}"
+            echo "commit=${commit}"
+            echo "version=${version}+${GITHUB_RUN_NUMBER}"
+            echo "asset=${base}.apk"
+            echo "sha256=$(sha256sum "dist/${base}.apk" | cut -d' ' -f1)"
+          } > "dist/BUILD-${slug}.txt"
+
+      - name: Upload APK
+        if: steps.probe.outputs.exists == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apk-${{ matrix.slug }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: android-release
+      cancel-in-progress: false
+    steps:
+      - name: Download build outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: apk-*
+          path: dist
+          merge-multiple: true
+
+      - name: Check for APKs
+        id: check
+        run: |
+          if compgen -G "dist/*.apk" >/dev/null; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::没有构建出 APK，跳过发布"
+          fi
+
+      - name: Publish rolling release
+        if: steps.check.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="android-latest"
+
+          {
+            echo "由 GitHub Actions 自动编译，包含 \`main\` 与 \`feature/ble-relay\` 两个分支的最新 Android 安装包。"
+            echo
+            echo "| 分支 | 提交 | 版本 | APK SHA256 |"
+            echo "| --- | --- | --- | --- |"
+            for meta in dist/BUILD-*.txt; do
+              branch="$(sed -n 's/^branch=//p' "$meta")"
+              commit="$(sed -n 's/^commit=//p' "$meta")"
+              version="$(sed -n 's/^version=//p' "$meta")"
+              sha="$(sed -n 's/^sha256=//p' "$meta")"
+              echo "| \`${branch}\` | \`${commit}\` | \`${version}\` | \`${sha}\` |"
+            done
+            echo
+            echo "APK 使用 debug 签名（仓库内没有 release keystore），可直接侧载安装；"
+            echo "同一台手机升级安装时请覆盖安装，不要先卸载。"
+            echo
+            echo "安装："
+            echo
+            echo '```bash'
+            echo 'adb install -r CoupleHeartbeatApp-<分支>-<提交>.apk'
+            echo '```'
+          } > notes.md
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" --title "Android · latest" --notes-file notes.md
+          else
+            gh release create "$tag" dist/* \
+              --target main \
+              --title "Android · latest" \
+              --notes-file notes.md \
+              --prerelease
+          fi
+
+          # 清掉上一轮发布后已不存在的旧安装包，release 里始终只保留最新构建
+          keep="$(cd dist && ls)"
+          gh release view "$tag" --json assets --jq '.assets[].name' |
+            while IFS= read -r name; do
+              if ! grep -qxF "$name" <<<"$keep"; then
+                gh release delete-asset "$tag" "$name" --yes
+              fi
+            done
