@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../services/ble_service.dart';
-import 'pairing_page.dart';
+import 'phone_pair_page.dart';
 import 'device_config_page.dart';
 
 class ScanPage extends StatefulWidget {
@@ -36,6 +36,7 @@ class _ScanPageState extends State<ScanPage> {
   }
 
   Future<void> _init() async {
+    await BleService.ensurePermissions();
     // 先等待蓝牙适配器状态就绪，再发起扫描，
     // 避免首次进入时 _bleState 还是 unknown 被误判为"蓝牙未开"。
     final state = await FlutterBluePlus.adapterState.first;
@@ -262,9 +263,8 @@ class _ScanPageState extends State<ScanPage> {
 
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => PairingPage(
+        builder: (context) => PhonePairPage(
           selectedDevice: device,
-          allDevices: _devices,
           onPaired: widget.onPaired,
         ),
       ),

@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/ble_service.dart';
 import '../services/storage_service.dart';
-import 'wifi_config_page.dart';
 
-// 单台设备配置页：设置昵称、进入 Wi-Fi 配网。
+// 单台设备配置页：设置昵称（设备不再连 Wi-Fi）。
 class DeviceConfigPage extends StatefulWidget {
   // 设备蓝牙地址
   final String address;
@@ -35,13 +34,14 @@ class _DeviceConfigPageState extends State<DeviceConfigPage> {
     super.initState();
     _nameController =
         TextEditingController(text: widget.initialName ?? widget.deviceName);
-    // 进入设备配置页即视为选择"单台模式"：先把模式与地址落库，
-    // 这样"只配 Wi-Fi 不改昵称"的用户返回后也能进入单设备主页。
+    // 进入设备配置页即视为选择"单台模式"：先把模式、角色与地址落库，
+    // 这样不改昵称直接返回的用户也能进入单设备主页。
     _persistSingleMode();
   }
 
   Future<void> _persistSingleMode() async {
     await StorageService.setMode('single');
+    await StorageService.setLocalRole('A');
     await StorageService.setDeviceAddress('A', widget.address);
     final existing = await StorageService.getDeviceName('A');
     if (existing == null || existing.isEmpty) {
@@ -81,6 +81,7 @@ class _DeviceConfigPageState extends State<DeviceConfigPage> {
 
     // 单台配置成功：记录运行模式与设备 A 信息
     await StorageService.setMode('single');
+    await StorageService.setLocalRole('A');
     await StorageService.setDeviceName('A', name);
     await StorageService.setDeviceAddress('A', widget.address);
 
@@ -88,19 +89,6 @@ class _DeviceConfigPageState extends State<DeviceConfigPage> {
     setState(() => _saving = false);
     _showSnack('昵称已保存');
     widget.onSaved?.call();
-  }
-
-  void _openWifiConfig() {
-    final name =
-        _nameController.text.trim().isEmpty ? widget.deviceName : _nameController.text.trim();
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => WifiConfigPage(
-          address: widget.address,
-          deviceName: name,
-        ),
-      ),
-    );
   }
 
   void _showSnack(String msg) {
@@ -209,20 +197,6 @@ class _DeviceConfigPageState extends State<DeviceConfigPage> {
                   ),
                 ],
               ),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Wi-Fi 配网入口
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.wifi, color: Color(0xFFFF6B9D)),
-              title: const Text('Wi-Fi 配网',
-                  style: TextStyle(color: Colors.white)),
-              subtitle: const Text('为设备下发 Wi-Fi 名称与密码',
-                  style: TextStyle(color: Colors.grey)),
-              trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-              onTap: _openWifiConfig,
             ),
           ),
         ],

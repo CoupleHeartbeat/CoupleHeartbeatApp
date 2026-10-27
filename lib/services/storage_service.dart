@@ -61,6 +61,45 @@ class StorageService {
     await _prefs.setInt('volume', vol);
   }
 
+
+  // 本机配对的是哪一台设备：'A' 或 'B'（两台手机各配各自的一台）
+  static Future<String?> getLocalRole() async {
+    return _prefs.getString('local_role');
+  }
+
+  static Future<void> setLocalRole(String role) async {
+    await _prefs.setString('local_role', role);
+  }
+
+  // 本机所配设备的蓝牙地址
+  static Future<String?> getLocalAddress() async {
+    final role = await getLocalRole();
+    if (role == null || role.isEmpty) return null;
+    return getDeviceAddress(role);
+  }
+
+  // 小米 MiMo API Key 只保存在手机本地，不下发设备
+  static Future<String?> getApiKey() async {
+    return _prefs.getString('mimo_api_key');
+  }
+
+  static Future<void> setApiKey(String apiKey) async {
+    await _prefs.setString('mimo_api_key', apiKey);
+  }
+
+  static Future<void> clearApiKey() async {
+    await _prefs.remove('mimo_api_key');
+  }
+
+  // 后台语音服务是否启用（默认开启，配对后自动常驻）
+  static Future<bool> getVoiceEnabled() async {
+    return _prefs.getBool('voice_enabled') ?? true;
+  }
+
+  static Future<void> setVoiceEnabled(bool enabled) async {
+    await _prefs.setBool('voice_enabled', enabled);
+  }
+
   // 清除所有配对数据
   static Future<void> clearAll() async {
     await _prefs.clear();

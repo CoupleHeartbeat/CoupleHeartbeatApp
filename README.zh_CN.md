@@ -4,11 +4,12 @@
 
 # CoupleHeartbeat · 手机 App
 
-![platform](https://img.shields.io/badge/Flutter-Android%20%7C%20iOS-02569B)
+![platform](https://img.shields.io/badge/Flutter-Android-02569B)
 ![transport](https://img.shields.io/badge/transport-BLE-informational)
 
-CoupleHeartbeat 挂饰的手机配套应用。通过低功耗蓝牙完成配对或单台配置、下发
-Wi-Fi 凭据、写入大模型 API Key，并给设备校准时间。基于 Flutter 开发。
+CoupleHeartbeat 挂饰的手机配套应用。设备不再连接网络：App 保持一条 BLE 长连接，
+接收设备录音，调用小米 MiMo 完成语音识别与对话，再把回复文本回传给设备显示。
+仅支持 Android。
 
 设备固件在 https://github.com/CoupleHeartbeat/CoupleHeartbeatDev
 
@@ -16,26 +17,26 @@ Wi-Fi 凭据、写入大模型 API Key，并给设备校准时间。基于 Flutt
 
 | 模块 | 行为 |
 | --- | --- |
-| **两台配对** | 选中两台设备，分别输入屏幕上显示的 4 位配对码并起名，App 会把配对信息写入两台设备。 |
-| **单台配置** | 只有一台设备时，可直接设置昵称并进入配网，无需配对。 |
-| **Wi-Fi 配网** | 优先用手机扫描附近网络（仅保留 2.4GHz，过滤 5/6GHz），不可用时降级为设备端扫描。凭据可同时下发给两台设备，页面持续轮询状态、IP 与信号直到连上；同一页面也能清除已保存的配网。 |
+| **两台手机配对** | 两台手机各配自己的一台设备。A 手机展示含 `pair_id` / `pair_key` 与自身设备地址的二维码；B 手机扫码后把本机设备写为角色 B 并展示回执二维码；A 再扫回执，把本机设备写为角色 A。 |
+| **单台配置** | 只有一台设备时，设置昵称后即可单独使用，语音链路完全一致。 |
+| **语音中继** | BLE 长连接订阅 0xFFE9 通知，重组 PCM 后封装 WAV，依次调用 `mimo-v2.5-asr` 与 `mimo-v2.6-flash`，最后把回复文本写入 0xFFEA。 |
+| **后台服务** | Android 前台服务（`connectedDevice`）让进程与 BLE 连接在退到后台后继续存活。 |
+| **模型 API Key** | MiMo Key 只保存在手机本地，不再下发给设备。 |
 | **工牌设置** | 修改设备上显示的昵称。 |
-| **大模型 API Key** | 只写入设备，App 不保存、也不上传到其他位置。 |
 | **音量** | 调节心跳音量（含静音模式）并回读当前档位。 |
-| **时间同步** | 下发手机的 Unix 时间与 UTC 偏移，让工牌显示正确的本地日期与时间。 |
-| **实时状态** | 电量、模式、音量与对方信号都从设备实时读取，不显示占位数据。 |
+| **时间同步** | 复用当前连接下发手机 Unix 时间与 UTC 偏移，让工牌显示正确的本地日期与时间。 |
+| **实时状态** | 电量、模式、音量与对方信号都通过现有 BLE 连接读取，不显示占位数据。 |
 
 ## 权限说明
 
 Android：
 
 - `BLUETOOTH_SCAN` / `BLUETOOTH_CONNECT`：BLE 扫描与连接。
-- `ACCESS_FINE_LOCATION` 与系统定位开关：Android 将 Wi-Fi 扫描结果视为位置
-  信息，即使较新版本也要求定位权限。
-- `NEARBY_WIFI_DEVICES`（Android 13+）：首次扫描前在运行时申请。
+- `CAMERA`：扫描配对二维码。
+- `POST_NOTIFICATIONS`：显示前台服务通知。
+- `FOREGROUND_SERVICE` 与 `FOREGROUND_SERVICE_CONNECTED_DEVICE`：常驻语音连接。
 
-iOS：只需蓝牙用途说明。iOS 没有公开的 Wi-Fi 列表 API，iPhone 用户需手动输入
-SSID，或改用设备端扫描。
+不再申请 Wi-Fi 或定位权限。
 
 ## 编译与运行
 
@@ -45,6 +46,9 @@ flutter analyze
 flutter run
 flutter build apk --release
 ```
+
+`mobile_scanner` 3.5.7 自身仍按 android-33 编译，而其 AndroidX 依赖要求 34+，
+因此 `android/build.gradle.kts` 把所有插件子工程的 compileSdk 统一为 36。
 
 ### 发行版签名
 
@@ -70,21 +74,32 @@ App 只与一个主服务（`0000ffe0-0000-1000-8000-00805f9b34fb`）交互：
 | 0xFFE1 | 写 | 配对配置 |
 | 0xFFE2 | 读 / 写 | 工牌昵称 |
 | 0xFFE3 | 读 / 通知 | 设备状态 |
-| 0xFFE4 | 写 | Wi-Fi 凭据 |
-| 0xFFE5 | 读 / 通知 | 配网状态 |
-| 0xFFE6 | 读 / 写 | 大模型 API Key（读取只返回是否已配置） |
-| 0xFFE7 | 读 / 写 | 扫描附近 Wi-Fi（写请求，读列表） |
 | 0xFFE8 | 写 | 时间同步（`unix` 秒与 `tz_offset` 秒） |
+| 0xFFE9 | 通知 | 语音上行：6 字节头 + PCM |
+| 0xFFEA | 写 | 回复下行：`[status][UTF-8 文本]` |
 
-连接都是短连接：连上、完成一次读写后立即断开，让设备可以继续广播。
+配置类写入使用短连接（连上、写入、断开）。语音会话则保持一条长连接，协商
+512 字节 MTU、订阅 0xFFE9，断线后自动重连。
+
+### 语音上行
+
+| 偏移 | 字段 |
+| --- | --- |
+| 0 | 类型：`1` BEGIN，`2` DATA，`3` END，`4` CANCEL |
+| 1 | 保留 |
+| 2..3 | offset，小端 |
+| 4..5 | PCM 总字节数，小端 |
+| 6.. | PCM 数据 |
+
+`END` 携带实际有效字节数，手机按此截断，绝不补静音。0xFFEA 的 status `0`
+表示成功，`1` 表示失败并附带简短原因，供设备屏幕显示。
 
 ## 目录结构
 
 ```
-lib/pages/       配对、设备/工牌配置、API Key、音量、Wi-Fi、扫描
-lib/services/    BLE 传输与本地存储
-android/         Manifest、权限与发行版签名
-ios/             Runner 工程与蓝牙用途说明
+lib/pages/       配对（二维码）、设备/工牌配置、AI 服务、音量、扫描
+lib/services/    BLE 传输、语音会话、MiMo 客户端、本地存储、前台服务
+android/         Manifest、权限、前台服务与发行版签名
 ```
 
 ## 开发说明

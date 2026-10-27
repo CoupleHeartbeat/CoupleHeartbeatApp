@@ -1,11 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/ble_service.dart';
 import '../services/storage_service.dart';
+import '../services/voice_session.dart';
 import 'badge_config_page.dart';
 import 'volume_page.dart';
 import 'device_config_page.dart';
-import 'wifi_config_page.dart';
-import 'ai_key_page.dart';
+import 'ai_service_page.dart';
 
 class HomePage extends StatefulWidget {
   final String deviceAName;
@@ -28,21 +29,63 @@ class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
   DeviceStatus? _statusA;
   DeviceStatus? _statusB;
-  WifiStatus? _wifiStatus; // 设备 A 的 Wi-Fi 状态
-  WifiStatus? _wifiStatusB; // 成对模式下设备 B 的 Wi-Fi 状态
-  bool? _aiKeyConfigured; // 设备 A 是否已配置 AI 对话 Key，null=未读取到
+  bool? _aiKeyConfigured; // 手机本地是否已保存 MiMo Key
+  String? _localRole;
   String? _addrA;
   bool _loadingStatus = false;
-  bool _syncingTime = false; // 正在同步时间
+  bool _syncingTime = false;
+  bool _voiceEnabled = false;
+  VoiceSessionState _voiceState = VoiceSessionState.idle;
+  String _voiceStatus = '未启用';
+  StreamSubscription<VoiceSessionState>? _voiceSub;
 
   // 设备 B 名称为空即视为单台模式
   bool get _isSingle =>
       widget.deviceBName == null || widget.deviceBName!.isEmpty;
 
+  // 本机所配的是哪一台（'A' 或 'B'），单台模式视为 A
+  String get _role => _isSingle ? 'A' : (_localRole ?? 'A');
+
   @override
   void initState() {
     super.initState();
+    _voiceSub = VoiceSession.instance.states.listen((s) {
+      if (!mounted) return;
+      setState(() {
+        _voiceState = s;
+        _voiceStatus = VoiceSession.instance.status;
+      });
+    });
     _refreshStatus();
+    _initVoice();
+  }
+
+  @override
+  void dispose() {
+    _voiceSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _initVoice() async {
+    final enabled = await StorageService.getVoiceEnabled();
+    if (!mounted) return;
+    setState(() => _voiceEnabled = enabled);
+    if (enabled) {
+      await VoiceSession.instance.enable();
+      if (mounted) setState(() => _voiceStatus = VoiceSession.instance.status);
+    }
+  }
+
+  Future<void> _toggleVoice(bool value) async {
+    setState(() => _voiceEnabled = value);
+    await StorageService.setVoiceEnabled(value);
+    if (value) {
+      await VoiceSession.instance.enable();
+    } else {
+      await VoiceSession.instance.disable();
+    }
+    if (!mounted) return;
+    setState(() => _voiceStatus = VoiceSession.instance.status);
   }
 
   // 按已保存地址重连设备读取真实状态；读不到即视为离线
@@ -52,41 +95,29 @@ class _HomePageState extends State<HomePage> {
 
     final addrA = await StorageService.getDeviceAddress('A');
     final addrB = await StorageService.getDeviceAddress('B');
-    final a =
-        addrA == null ? null : await BleService.readDeviceStatus(address: addrA);
+    final role = await StorageService.getLocalRole();
+    final key = await StorageService.getApiKey();
 
-    DeviceStatus? b;
-    if (!_isSingle) {
-      b = addrB == null
-          ? null
-          : await BleService.readDeviceStatus(address: addrB);
-    }
-
-    // Wi-Fi 状态：单台模式用于状态卡片，两台模式用于设置页展示行。
-    // 成对模式下 A/B 两台都要读，否则无法判断哪一台没连上。
-    WifiStatus? wifi;
-    if (addrA != null) {
-      wifi = await BleService.readWifiStatus(address: addrA);
-    }
-    WifiStatus? wifiB;
-    if (!_isSingle && addrB != null) {
-      wifiB = await BleService.readWifiStatus(address: addrB);
+    // 本机所配设备由常驻连接直接读，避免两条 BLE 连接互相抢占
+    Future<DeviceStatus?> readOne(String? addr, String role) async {
+      if (addr == null) return null;
+      if (role == _role && VoiceSession.instance.enabled) {
+        final s = await VoiceSession.instance.readDeviceStatus();
+        if (s != null) return s;
+      }
+      return BleService.readDeviceStatus(address: addr);
     }
 
-    // AI 对话 Key 状态：读取失败（离线/旧固件）返回 null，不影响其它状态
-    bool? aiConfigured;
-    if (addrA != null) {
-      aiConfigured = await BleService.readAiKeyStatus(address: addrA);
-    }
+    final a = await readOne(addrA, 'A');
+    final b = _isSingle ? null : await readOne(addrB, 'B');
 
     if (!mounted) return;
     setState(() {
       _addrA = addrA;
       _statusA = a;
       _statusB = b;
-      _wifiStatus = wifi;
-      _wifiStatusB = wifiB;
-      _aiKeyConfigured = aiConfigured;
+      _localRole = role;
+      _aiKeyConfigured = key != null && key.isNotEmpty;
       _loadingStatus = false;
     });
   }
@@ -94,7 +125,6 @@ class _HomePageState extends State<HomePage> {
   bool get _bothPaired =>
       (_statusA?.paired ?? false) && (_statusB?.paired ?? false);
 
-  // 任一台设备上报了对方的信号强度即认为心跳通信正常
   int? get _partnerRssi {
     for (final s in [_statusA, _statusB]) {
       final r = s?.partnerRssi;
@@ -109,6 +139,38 @@ class _HomePageState extends State<HomePage> {
     if (s.battery != null) parts.add('电量 ${s.battery}%');
     parts.add(s.modeName);
     return parts.join(' · ');
+  }
+
+  String get _voiceLabel {
+    switch (_voiceState) {
+      case VoiceSessionState.idle:
+        return _voiceEnabled ? '已连接' : '未启用';
+      case VoiceSessionState.connecting:
+        return '连接中';
+      case VoiceSessionState.listening:
+        return '接收语音';
+      case VoiceSessionState.thinking:
+        return '识别中';
+      case VoiceSessionState.replying:
+        return '生成回复';
+      case VoiceSessionState.error:
+        return '异常';
+    }
+  }
+
+  Color get _voiceColor {
+    switch (_voiceState) {
+      case VoiceSessionState.idle:
+        return _voiceEnabled ? Colors.green : Colors.grey;
+      case VoiceSessionState.connecting:
+        return Colors.orange;
+      case VoiceSessionState.listening:
+      case VoiceSessionState.thinking:
+      case VoiceSessionState.replying:
+        return const Color(0xFF6BB5FF);
+      case VoiceSessionState.error:
+        return Colors.red;
+    }
   }
 
   @override
@@ -164,7 +226,6 @@ class _HomePageState extends State<HomePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 心形动画区
           Container(
             height: 200,
             decoration: BoxDecoration(
@@ -179,18 +240,13 @@ class _HomePageState extends State<HomePage> {
               borderRadius: BorderRadius.circular(20),
             ),
             child: const Center(
-              child: Icon(
-                Icons.favorite,
-                size: 80,
-                color: Color(0xFFFF6B9D),
-              ),
+              child: Icon(Icons.favorite, size: 80, color: Color(0xFFFF6B9D)),
             ),
           ),
           const SizedBox(height: 24),
 
-          // 设备状态：单台模式只渲染一张卡片
           if (_isSingle)
-            _deviceCard('A', widget.deviceAName, _statusA)
+            _deviceCard(_role, widget.deviceAName, _statusA)
           else
             Row(
               children: [
@@ -203,7 +259,6 @@ class _HomePageState extends State<HomePage> {
             ),
           const SizedBox(height: 24),
 
-          // 连接状态
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -216,41 +271,18 @@ class _HomePageState extends State<HomePage> {
                           fontSize: 16,
                           fontWeight: FontWeight.bold)),
                   const SizedBox(height: 12),
-                  if (_isSingle) ...[
-                    // 单台模式：隐藏配对状态与心跳通信，改为展示 Wi-Fi 状态
-                    _statusRow('设备状态', _deviceSummary(_statusA),
-                        color: _statusA == null ? Colors.grey : Colors.green),
-                    const SizedBox(height: 8),
-                    _statusRow(
-                      'Wi-Fi 状态',
-                      _wifiStatus == null ? '设备离线 / 未知' : _wifiStatus!.stateLabel,
-                      color: _wifiStatus == null
-                          ? Colors.grey
-                          : (_wifiStatus!.isConnected
-                              ? Colors.green
-                              : (_wifiStatus!.state == 3
-                                  ? Colors.red
-                                  : Colors.orange)),
-                    ),
-                    const SizedBox(height: 8),
-                    _statusRow(
-                      'IP 地址',
-                      (_wifiStatus?.ip == null || _wifiStatus!.ip!.isEmpty)
-                          ? '--'
-                          : _wifiStatus!.ip!,
-                      color: Colors.white,
-                    ),
-                    const SizedBox(height: 8),
-                    _statusRow(
-                      '信号强度',
-                      (_wifiStatus?.rssi == null || _wifiStatus!.rssi == 0)
-                          ? '--'
-                          : '${_wifiStatus!.rssi} dBm',
-                      color: Colors.white,
-                    ),
-                  ] else ...[
-                    _statusRow('配对状态',
-                        _bothPaired ? '已配对' : '未完成配对',
+                  _statusRow(
+                      '语音服务', _voiceLabel,
+                      color: _voiceColor),
+                  if (_voiceState == VoiceSessionState.error) ...[
+                    const SizedBox(height: 6),
+                    Text(_voiceStatus,
+                        style:
+                            const TextStyle(color: Colors.red, fontSize: 12)),
+                  ],
+                  const SizedBox(height: 8),
+                  if (!_isSingle) ...[
+                    _statusRow('配对状态', _bothPaired ? '已配对' : '未完成配对',
                         color: _bothPaired ? Colors.green : Colors.orange),
                     const SizedBox(height: 8),
                     _statusRow('设备 A', _deviceSummary(_statusA),
@@ -266,6 +298,9 @@ class _HomePageState extends State<HomePage> {
                           : '正常 · 信号 $_partnerRssi dBm',
                       color: _partnerRssi == null ? Colors.grey : Colors.green,
                     ),
+                  ] else ...[
+                    _statusRow('设备状态', _deviceSummary(_statusA),
+                        color: _statusA == null ? Colors.grey : Colors.green),
                   ],
                 ],
               ),
@@ -273,7 +308,6 @@ class _HomePageState extends State<HomePage> {
           ),
           const SizedBox(height: 16),
 
-          // 提示
           const Card(
             child: Padding(
               padding: EdgeInsets.all(16),
@@ -286,13 +320,13 @@ class _HomePageState extends State<HomePage> {
                           fontSize: 16,
                           fontWeight: FontWeight.bold)),
                   SizedBox(height: 12),
-                  Text('• 配对设备靠近时，工牌页四周会亮起光效，无需手动开启',
+                  Text('• 设备不连 Wi-Fi，长按 OK 键说话，语音经蓝牙送到手机处理',
                       style: TextStyle(color: Colors.grey, fontSize: 13)),
                   SizedBox(height: 6),
-                  Text('• 距离越近，光效越亮、呼吸越快，心跳音也越急',
+                  Text('• 保持“后台语音服务”开启，App 退到后台也能正常对话',
                       style: TextStyle(color: Colors.grey, fontSize: 13)),
                   SizedBox(height: 6),
-                  Text('• 两台设备贴得很近时，光效达到最强',
+                  Text('• 两台设备靠近时工牌页会亮起光效，距离越近呼吸越快',
                       style: TextStyle(color: Colors.grey, fontSize: 13)),
                   SizedBox(height: 6),
                   Text('• 短按 OK 键进入设置菜单，长按 OK 键进入 AI 对话',
@@ -318,9 +352,8 @@ class _HomePageState extends State<HomePage> {
               backgroundColor: role == 'A'
                   ? const Color(0xFFFF6B9D)
                   : const Color(0xFF6BB5FF),
-              child: Text(role,
-                  style:
-                      const TextStyle(color: Colors.white, fontSize: 24)),
+              child:
+                  Text(role, style: const TextStyle(color: Colors.white, fontSize: 24)),
             ),
             const SizedBox(height: 8),
             Text(name,
@@ -374,16 +407,14 @@ class _HomePageState extends State<HomePage> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('设备设置',
-            style: TextStyle(color: Colors.grey, fontSize: 13)),
+        const Text('设备设置', style: TextStyle(color: Colors.grey, fontSize: 13)),
         const SizedBox(height: 8),
         Card(
           child: Column(
             children: [
               ListTile(
                 leading: const Icon(Icons.edit, color: Color(0xFFFF6B9D)),
-                title: const Text('修改昵称',
-                    style: TextStyle(color: Colors.white)),
+                title: const Text('修改昵称', style: TextStyle(color: Colors.white)),
                 subtitle: Text(
                     _isSingle
                         ? widget.deviceAName
@@ -394,31 +425,25 @@ class _HomePageState extends State<HomePage> {
               ),
               const Divider(color: Color(0xFF3A3A5E), height: 1),
               ListTile(
-                leading: const Icon(Icons.wifi, color: Color(0xFFFF6B9D)),
-                title: const Text('Wi-Fi 配网',
-                    style: TextStyle(color: Colors.white)),
-                subtitle: const Text('为设备下发 Wi-Fi 名称与密码',
-                    style: TextStyle(color: Colors.grey)),
-                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                onTap: _openWifiConfig,
-              ),
-              const Divider(color: Color(0xFF3A3A5E), height: 1),
-              ListTile(
-                leading: const Icon(Icons.wifi_tethering, color: Color(0xFF6BB5FF)),
-                title: const Text('Wi-Fi 状态',
-                    style: TextStyle(color: Colors.white)),
-                subtitle: Text(_wifiStatusText,
-                    style: const TextStyle(color: Colors.grey)),
-              ),
-              const Divider(color: Color(0xFF3A3A5E), height: 1),
-              ListTile(
                 leading: const Icon(Icons.smart_toy, color: Color(0xFFFF6B9D)),
-                title: const Text('AI 对话配置',
+                title: const Text('AI 服务',
                     style: TextStyle(color: Colors.white)),
                 subtitle: Text(_aiKeyStatusText,
                     style: const TextStyle(color: Colors.grey)),
                 trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                onTap: _openAiKeyConfig,
+                onTap: _openAiService,
+              ),
+              const Divider(color: Color(0xFF3A3A5E), height: 1),
+              SwitchListTile(
+                secondary: const Icon(Icons.bluetooth_searching,
+                    color: Color(0xFF6BB5FF)),
+                title: const Text('后台语音服务',
+                    style: TextStyle(color: Colors.white)),
+                subtitle: Text('常驻蓝牙连接，退出 App 后也能接收语音\n$_voiceLabel',
+                    style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                value: _voiceEnabled,
+                activeColor: const Color(0xFFFF6B9D),
+                onChanged: _toggleVoice,
               ),
               const Divider(color: Color(0xFF3A3A5E), height: 1),
               ListTile(
@@ -469,7 +494,7 @@ class _HomePageState extends State<HomePage> {
               ListTile(
                 leading: Icon(Icons.info_outline, color: Colors.grey),
                 title: Text('版本', style: TextStyle(color: Colors.white)),
-                trailing: Text('1.0.0', style: TextStyle(color: Colors.grey)),
+                trailing: Text('1.1.0', style: TextStyle(color: Colors.grey)),
               ),
             ],
           ),
@@ -484,35 +509,12 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // 单台 Wi-Fi 状态文案片段：状态 + (ssid · ip · rssi)
-  String _wifiStatusOne(WifiStatus? s) {
-    if (s == null) return '设备离线 / 未知';
-    final parts = <String>[s.stateLabel];
-    if (s.ssid != null && s.ssid!.isNotEmpty) parts.add(s.ssid!);
-    if (s.ip != null && s.ip!.isNotEmpty) parts.add(s.ip!);
-    if (s.rssi != null && s.rssi != 0) parts.add('${s.rssi} dBm');
-    return parts.join(' · ');
-  }
-
-  // 设置页「Wi-Fi 状态」展示文案：
-  // 单台模式只显示 A 台；成对模式分别显示 A/B 两台，
-  // 避免只看得到一台状态而误判“只有一台连上”。
-  String get _wifiStatusText {
-    if (_isSingle) return _wifiStatusOne(_wifiStatus);
-    final nameA = widget.deviceAName.isEmpty ? '设备A' : widget.deviceAName;
-    final nameB = widget.deviceBName!.isEmpty ? '设备B' : widget.deviceBName!;
-    return '$nameA: ${_wifiStatusOne(_wifiStatus)}\n'
-        '$nameB: ${_wifiStatusOne(_wifiStatusB)}';
-  }
-
-  // 设置页「AI 对话配置」展示文案：未读取到显示「--」
   String get _aiKeyStatusText {
     final configured = _aiKeyConfigured;
     if (configured == null) return '--';
-    return configured ? '已配置 API Key' : '未配置 API Key';
+    return configured ? '已保存 API Key' : '未配置 API Key';
   }
 
-  // 修改昵称入口：单台模式进设备配置页，两台模式进双昵称页
   void _openNicknameConfig() {
     if (_isSingle) {
       Navigator.of(context).push(
@@ -536,55 +538,13 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // Wi-Fi 配网入口：使用设备 A 的地址与名称；
-  // 两台模式下把设备 B 的地址与名称作为 secondAddress/secondDeviceName 传入。
-  Future<void> _openWifiConfig() async {
-    String? addrB;
-    if (!_isSingle) {
-      addrB = await StorageService.getDeviceAddress('B');
-    }
-    if (!mounted) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => WifiConfigPage(
-          address: _addrA ?? '',
-          deviceName: widget.deviceAName,
-          secondAddress:
-              (_isSingle || addrB == null || addrB.isEmpty) ? null : addrB,
-          secondDeviceName: _isSingle ? null : widget.deviceBName,
-        ),
-      ),
+  Future<void> _openAiService() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => const AiServicePage()),
     );
+    if (mounted) _refreshStatus();
   }
 
-  // AI 对话配置入口：使用设备 A 的地址与名称，返回后刷新配置状态。
-  // 两台模式下把设备 B 的地址与名称作为 secondAddress/secondDeviceName 传入，
-  // 支持在页面内同时给两台设备下发同一个 API Key。
-  Future<void> _openAiKeyConfig() async {
-    String? addrB;
-    if (!_isSingle) {
-      addrB = await StorageService.getDeviceAddress('B');
-    }
-    if (!mounted) return;
-    await Navigator.of(context)
-        .push(
-      MaterialPageRoute(
-        builder: (context) => AiKeyPage(
-          address: _addrA ?? '',
-          deviceName: widget.deviceAName,
-          secondAddress:
-              (_isSingle || addrB == null || addrB.isEmpty) ? null : addrB,
-          secondDeviceName: _isSingle ? null : widget.deviceBName,
-        ),
-      ),
-    )
-        .then((_) {
-      if (mounted) _refreshStatus();
-    });
-  }
-
-  // 同步时间入口：把手机当前时间通过 0xFFE8 下发到设备（成对模式下
-  // 同时下发两台）。结果用 SnackBar 反馈。
   Future<void> _syncTime() async {
     final addrA = _addrA;
     if (addrA == null || addrA.isEmpty) {
@@ -600,8 +560,20 @@ class _HomePageState extends State<HomePage> {
         if (addrB != null && addrB.isNotEmpty) addrs.add(addrB);
       }
 
-      final results =
-          await BleService.writeDeviceTimeToMany(addresses: addrs);
+      final results = <String, String?>{};
+      for (final addr in addrs) {
+        final isLocal = addr == _addrA && VoiceSession.instance.enabled;
+        if (isLocal) {
+          try {
+            await VoiceSession.instance.syncTime();
+            results[addr] = null;
+          } catch (e) {
+            results[addr] = '同步失败：$e';
+          }
+        } else {
+          results[addr] = await BleService.writeDeviceTime(address: addr);
+        }
+      }
       if (!mounted) return;
 
       final failed = <String>[];
@@ -622,9 +594,7 @@ class _HomePageState extends State<HomePage> {
 
   void _showSnack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg)),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   void _showUnpairDialog() {
@@ -642,6 +612,8 @@ class _HomePageState extends State<HomePage> {
           ),
           TextButton(
             onPressed: () async {
+              await VoiceSession.instance.disable();
+              await StorageService.setVoiceEnabled(false);
               await StorageService.clearAll();
               widget.onUnpair();
               if (mounted) Navigator.of(context).pop();
