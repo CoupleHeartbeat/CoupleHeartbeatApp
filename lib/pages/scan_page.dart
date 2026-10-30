@@ -2,18 +2,17 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../services/ble_service.dart';
-import 'phone_pair_page.dart';
 import 'device_config_page.dart';
 
+// 首次启动引导：一个手机只绑定一台设备。
+// 两台设备的串联在主页“设置 - 两台串联”中完成。
 class ScanPage extends StatefulWidget {
-  final Function(String nameA, String nameB) onPaired;
-  // 单台配置保存成功后的回调，通知上层刷新
-  final VoidCallback? onSingleConfigured;
+  // 设备绑定保存成功后的回调，通知上层刷新
+  final VoidCallback onBound;
 
   const ScanPage({
     super.key,
-    required this.onPaired,
-    this.onSingleConfigured,
+    required this.onBound,
   });
 
   @override
@@ -26,8 +25,6 @@ class _ScanPageState extends State<ScanPage> {
   BluetoothAdapterState _bleState = BluetoothAdapterState.unknown;
   StreamSubscription<List<BleDeviceInfo>>? _scanSub;
   StreamSubscription<BluetoothAdapterState>? _stateSub;
-  // 当前模式：'pair'=两台配对（默认），'single'=单台配置
-  String _mode = 'pair';
 
   @override
   void initState() {
@@ -112,46 +109,7 @@ class _ScanPageState extends State<ScanPage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          _buildModeSelector(),
-          Expanded(child: _buildBody()),
-        ],
-      ),
-    );
-  }
-
-  // 顶部模式选择：两台配对 / 单台配置
-  Widget _buildModeSelector() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: SegmentedButton<String>(
-        segments: const [
-          ButtonSegment<String>(
-            value: 'pair',
-            label: Text('两台配对'),
-            icon: Icon(Icons.favorite),
-          ),
-          ButtonSegment<String>(
-            value: 'single',
-            label: Text('单台配置'),
-            icon: Icon(Icons.tune),
-          ),
-        ],
-        selected: {_mode},
-        onSelectionChanged: (selection) =>
-            setState(() => _mode = selection.first),
-        style: ButtonStyle(
-          foregroundColor: WidgetStateProperty.resolveWith((states) =>
-              states.contains(WidgetState.selected)
-                  ? Colors.white
-                  : Colors.grey),
-          backgroundColor: WidgetStateProperty.resolveWith((states) =>
-              states.contains(WidgetState.selected)
-                  ? const Color(0xFFFF6B9D)
-                  : const Color(0xFF252540)),
-        ),
-      ),
+      body: _buildBody(),
     );
   }
 
@@ -243,31 +201,20 @@ class _ScanPageState extends State<ScanPage> {
   }
 
   void _selectDevice(BleDeviceInfo device) {
-    // 单台配置：直接进入设备配置页，不做两台配对
-    if (_mode == 'single') {
-      Navigator.of(context)
-          .push(
-            MaterialPageRoute(
-              builder: (context) => DeviceConfigPage(
-                address: device.device.remoteId.str,
-                deviceName: device.name,
-                onSaved: widget.onSingleConfigured,
-              ),
+    // 一个手机只绑定一台设备：进入设备配置页绑定（写昵称 + 保存地址）。
+    // 两台设备的串联在主页设置中完成。
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(
+            builder: (context) => DeviceConfigPage(
+              address: device.device.remoteId.str,
+              deviceName: device.name,
+              onSaved: widget.onBound,
             ),
-          )
-          // 返回后再刷新一次根状态：进入过设备配置页即代表选择了单台模式，
-          // 这样"只配 Wi-Fi、未改昵称"的用户返回后也能进入单设备主页。
-          .then((_) => widget.onSingleConfigured?.call());
-      return;
-    }
-
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => PhonePairPage(
-          selectedDevice: device,
-          onPaired: widget.onPaired,
-        ),
-      ),
-    );
+          ),
+        )
+        // 返回后再刷新一次根状态：进入过设备配置页即代表完成了绑定，
+        // 这样"未改昵称直接返回"的用户返回后也能进入主页。
+        .then((_) => widget.onBound());
   }
 }

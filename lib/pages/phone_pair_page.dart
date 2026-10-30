@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:qr/qr.dart';
 import '../services/ble_service.dart';
@@ -64,15 +65,15 @@ class PairQr {
   }
 }
 
-// 两台手机各配一台设备，再用二维码把 pair_id / pair_key / 对方地址串起来。
+// 两台串联：两台手机已各自绑定一台设备（首页配对），
+// 从设置进入本页，用二维码交换 pair_id / pair_key / 对方地址，
+// 分别写入各自的设备后，两台设备即串联成一对。
 class PhonePairPage extends StatefulWidget {
-  final BleDeviceInfo selectedDevice;
-  final Function(String nameA, String nameB) onPaired;
+  final Function(String nameA, String nameB) onLinked;
 
   const PhonePairPage({
     super.key,
-    required this.selectedDevice,
-    required this.onPaired,
+    required this.onLinked,
   });
 
   @override
@@ -91,7 +92,38 @@ class _PhonePairPageState extends State<PhonePairPage> {
   String? _pairKey;
   PairQr? _remote; // A 扫到的 B 回执，或 B 扫到的 A 邀请
 
-  String get _address => widget.selectedDevice.device.remoteId.str;
+  // 本机绑定的设备（首页配对时保存的地址与昵称）
+  String? _ownAddr;
+  String? _ownName;
+  bool _ready = false;
+  bool _loadFailed = false;
+
+  String get _address => _ownAddr ?? '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOwnDevice();
+  }
+
+  Future<void> _loadOwnDevice() async {
+    final role = await StorageService.getLocalRole();
+    final address =
+        await StorageService.getLocalAddress() ??
+            await StorageService.getDeviceAddress('A');
+    final name = await StorageService.getDeviceName(role ?? 'A');
+    if (!mounted) return;
+    if (address == null || address.isEmpty) {
+      setState(() => _loadFailed = true);
+      return;
+    }
+    _ownAddr = address;
+    _ownName = name;
+    if (name != null && name.isNotEmpty) {
+      _nameController.text = name;
+    }
+    setState(() => _ready = true);
+  }
 
   @override
   void dispose() {
@@ -156,7 +188,7 @@ class _PhonePairPageState extends State<PhonePairPage> {
 
     final nameA = _validatedName();
     final err = await BleService.pairDevice(
-      device: widget.selectedDevice.device,
+      device: BluetoothDevice.fromId(_address),
       role: 'A',
       pairId: _pairId!,
       pairKey: _pairKey!,
@@ -189,7 +221,7 @@ class _PhonePairPageState extends State<PhonePairPage> {
     });
     await Future.delayed(const Duration(milliseconds: 700));
     if (!mounted) return;
-    widget.onPaired(nameA, qr.name);
+    widget.onLinked(nameA, qr.name);
     Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
@@ -229,7 +261,7 @@ class _PhonePairPageState extends State<PhonePairPage> {
 
     final nameB = _validatedName();
     final err = await BleService.pairDevice(
-      device: widget.selectedDevice.device,
+      device: BluetoothDevice.fromId(_address),
       role: 'B',
       pairId: remote.pairId,
       pairKey: remote.pairKey,
@@ -265,14 +297,46 @@ class _PhonePairPageState extends State<PhonePairPage> {
   void _finishAsPartner() {
     final nameB = _validatedName();
     final remote = _remote;
-    widget.onPaired(remote?.name ?? '设备A', nameB);
+    widget.onLinked(remote?.name ?? '设备A', nameB);
     Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_loadFailed) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('两台串联')),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.link_off, size: 64, color: Colors.grey),
+              const SizedBox(height: 16),
+              const Text('本机尚未绑定设备',
+                  style: TextStyle(color: Colors.grey)),
+              const SizedBox(height: 8),
+              const Text('请先返回首页，配对绑定一台设备',
+                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('返回'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (!_ready) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('两台串联')),
+        body: const Center(
+          child: CircularProgressIndicator(color: Color(0xFFFF6B9D)),
+        ),
+      );
+    }
     return Scaffold(
-      appBar: AppBar(title: const Text('配对配置')),
+      appBar: AppBar(title: const Text('两台串联')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -292,10 +356,10 @@ class _PhonePairPageState extends State<PhonePairPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('本机设备',
+                          const Text('本机已绑定设备',
                               style:
                                   TextStyle(color: Colors.grey, fontSize: 12)),
-                          Text(widget.selectedDevice.name,
+                          Text(_ownName ?? '未命名设备',
                               style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 15,
@@ -339,7 +403,7 @@ class _PhonePairPageState extends State<PhonePairPage> {
             _buildCodeField(),
             const SizedBox(height: 8),
             const Text(
-              '配对码显示在设备屏幕上（未配对状态）；\n已配对过的设备请先短按 OK 键进入设置菜单，选择"恢复出厂设置"。',
+              '配对码显示在设备屏幕上（设备未串联时显示）；\n串联过的设备请先短按 OK 键进入设置菜单，选择"恢复出厂设置"。',
               style: TextStyle(color: Colors.grey, fontSize: 12),
               textAlign: TextAlign.center,
             ),

@@ -73,7 +73,8 @@ class _AppRootState extends State<AppRoot> {
     });
   }
 
-  void _onPaired(String nameA, String nameB) {
+  // 设置中完成两台串联：进入双设备视图
+  void _onLinked(String nameA, String nameB) {
     setState(() {
       _isPaired = true;
       _mode = 'pair';
@@ -93,18 +94,19 @@ class _AppRootState extends State<AppRoot> {
 
   @override
   Widget build(BuildContext context) {
-    final single = !_isPaired && _mode == 'single';
-    // 已配对或单台模式均进入主页；单台模式下设备 B 允许为空
-    if (_isPaired || single) {
+    // single = 已绑定一台设备但尚未完成两台串联
+    final unlinked = !_isPaired && _mode == 'single';
+    // 绑定即进主页（单设备视图）；串联完成后进入双设备视图
+    if (_isPaired || unlinked) {
       return HomePage(
         deviceAName: _deviceAName ?? '设备A',
-        deviceBName: single ? null : (_deviceBName ?? '设备B'),
+        deviceBName: unlinked ? null : (_deviceBName ?? '设备B'),
         onUnpair: _onUnpaired,
+        onLinked: _onLinked,
       );
     }
     return ScanPage(
-      onPaired: _onPaired,
-      onSingleConfigured: _loadPairStatus,
+      onBound: _loadPairStatus,
     );
   }
 }

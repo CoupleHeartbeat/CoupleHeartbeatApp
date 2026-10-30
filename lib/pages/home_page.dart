@@ -4,21 +4,25 @@ import '../services/ble_service.dart';
 import '../services/storage_service.dart';
 import '../services/voice_session.dart';
 import 'badge_config_page.dart';
+import 'phone_pair_page.dart';
 import 'volume_page.dart';
 import 'device_config_page.dart';
 import 'ai_service_page.dart';
 
 class HomePage extends StatefulWidget {
   final String deviceAName;
-  // 单台模式下设备 B 为空/为 null，仅渲染一张设备卡片
+  // 未串联时设备 B 为空/为 null，仅渲染一张设备卡片
   final String? deviceBName;
   final VoidCallback onUnpair;
+  // 设置中完成两台串联后的回调，通知根组件切换到双设备视图
+  final Function(String nameA, String nameB) onLinked;
 
   const HomePage({
     super.key,
     required this.deviceAName,
     required this.deviceBName,
     required this.onUnpair,
+    required this.onLinked,
   });
 
   @override
@@ -413,6 +417,18 @@ class _HomePageState extends State<HomePage> {
           child: Column(
             children: [
               ListTile(
+                leading: const Icon(Icons.link, color: Color(0xFFFF6B9D)),
+                title: const Text('两台串联', style: TextStyle(color: Colors.white)),
+                subtitle: Text(
+                    _isSingle
+                        ? '与对方手机互扫二维码，把两台设备串成一对'
+                        : '已串联：${widget.deviceAName} ↔ ${widget.deviceBName}',
+                    style: const TextStyle(color: Colors.grey)),
+                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                onTap: _openLinkPage,
+              ),
+              const Divider(color: Color(0xFF3A3A5E), height: 1),
+              ListTile(
                 leading: const Icon(Icons.edit, color: Color(0xFFFF6B9D)),
                 title: const Text('修改昵称', style: TextStyle(color: Colors.white)),
                 subtitle: Text(
@@ -513,6 +529,14 @@ class _HomePageState extends State<HomePage> {
     final configured = _aiKeyConfigured;
     if (configured == null) return '--';
     return configured ? '已保存 API Key' : '未配置 API Key';
+  }
+
+  void _openLinkPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => PhonePairPage(onLinked: widget.onLinked),
+      ),
+    );
   }
 
   void _openNicknameConfig() {
